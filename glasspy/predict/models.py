@@ -1724,6 +1724,89 @@ class GlassNet(MTL):
         else:
             return y_pred
 
+    def enable_dropout(self):
+        """Enable dropout layers (during inference)."""
+        for m in self.modules():
+            if m.__class__.__name__.startswith("Dropout"):
+                m.train()
+
+    def predict_with_uncertainty(
+        self,
+        composition: CompositionLike,
+        input_cols: List[str] = None,
+        uncertainty_method: str = "mc-dropout",
+        uncertainty_options: Dict = None,
+        return_dataframe: bool = True,
+    ):
+        """Makes prediction of properties (with uncertainties) using GlassNet.
+
+        Args:
+          composition:
+            Any composition-like object.
+          input_cols:
+            List of strings representing the chemical entities related to each
+            column of `composition`. Necessary only when `composition` is a
+            list or array, ignored otherwise.
+          uncertainty_method:
+              String specifying the method to use to estimate prediction
+              uncertainties. Options are "mc-dropout", "distance", "ensemble",
+              "second-nn", "rf-nn-out", and "rf-nn-repr".
+              Defaults to "mc-dropout".
+          uncertainty_options:
+              Keyword arguments that specify parameters to be used in the
+              uncertainty estimation method as applicable.
+              For example, `{"num_samples": 10}` can be used to specify that
+              Monte Carlo dropout should use 10 samples to estimate prediction
+              mean and uncertainty.
+          return_dataframe:
+            If `True`, then returns a pandas DataFrame, else returns an array.
+            Default value is `True`.
+
+        Returns:
+          Predicted values of properties and the respective uncertainties.
+          Will be a data frame if `return_dataframe` is True, otherwise will be
+          an array.
+        """
+        if uncertainty_options is None:
+            uncertainty_options = {}
+
+        # featurize input composition
+        features = self.featurizer(composition, input_cols)
+        features = torch.from_numpy(features).float()
+
+        # put model in evaluation mode
+        self.eval()
+
+        if uncertainty_method.lower() in ["mc-dropout", "mcdropout"]:
+            self.enable_dropout()
+            num_samples = uncertainty_options.get("num_samples", 10)
+            y = np.zeros((num_samples, len(self.targets)))
+            with torch.no_grad():
+                for sample_idx in range(num_samples):
+                    y[sample_idx] = self.scaler_y.inverse_transform(
+                            self(features).detach()
+                    )
+            y_pred = np.mean(y, axis=0).reshape((1, len(self.targets)))
+            y_unct = np.std(y, axis=0).reshape((1, len(self.targets)))
+        else:
+            msg = (
+                f"{uncertainty_method} for uncertainty estimation has not"
+                f"been implemented"
+            )
+            raise NotImplementedError(msg)
+
+        # put the model back in training mode (consistent with the behavior of
+        # the `predict` function above)
+        self.train()
+
+        if return_dataframe:
+            df_pred = pd.DataFrame(y_pred, columns=self.targets)
+            unct_columns = [f"{target}_UNCT" for target in self.targets]
+            df_unct = pd.DataFrame(y_unct, columns=unct_columns)
+            return df_pred, df_unct
+        else:
+            return y_pred, y_unct
+
     def _viscosity_table_single(
         self,
         prediction,
