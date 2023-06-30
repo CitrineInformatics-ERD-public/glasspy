@@ -21,6 +21,9 @@ from scipy.stats import theilslopes
 from scipy.optimize import least_squares
 from torch.nn import functional as F
 from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+from pytorch_lightning import Trainer
+from sklearn.preprocessing import MinMaxScaler
 
 # fmt: off
 try:
@@ -2128,6 +2131,28 @@ class GlassNet(MTL):
             return 10**log10_viscosity, parameters
         else:
             return 10**log10_viscosity
+
+    def train_model(self, df: pd.DataFrame, max_epochs: int = None):
+        if max_epochs is None:
+            max_epochs = self.hparams.get("max_epochs", 100)
+
+        X = self.featurizer(df["elements"], auto_scale=False)
+        self.scaler_x = MinMaxScaler()
+        X = self.scaler_x.fit_transform(X)
+        X = torch.from_numpy(X).float()
+
+        y = np.array(df["property"].values, dtype=np.float64)
+        self.scaler_y = MinMaxScaler()
+        y = self.scaler_y.fit_transform(y)
+        y = torch.from_numpy(y).float()
+
+        Xy = [(_X, _y) for _X, _y in zip(X, y)]
+        train_dataloader = DataLoader(
+            Xy, batch_size=self.hparams.get("batch_size"),
+        )
+
+        trainer = Trainer(max_epochs=max_epochs)
+        trainer.fit(self, train_dataloaders=train_dataloader)
 
     @staticmethod
     def citation(bibtex: bool = False) -> str:
